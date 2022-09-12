@@ -59,6 +59,77 @@ pub type FxHashSet<V> = HashSet<V, BuildHasherDefault<FxHasher>>;
 /// itself is much higher because it works on up to 8 bytes at a time.
 pub struct FxHasher {
     hash: usize,
+    
+    
+pub trait Evaluate: Sized {
+    /// Evaluate a list of computations
+    fn evaluate(self, comp: &[Computation]) -> Self;
+    /// Evaluate a calculation transformation
+    fn calculate(self, calculation: &Calculation) -> Self;
+    /// Evaluate a `Read` operation, returning the read data
+    fn read(reader: &Reader) -> Self;
+    /// Evaluate a write operation, and write the data to the writer
+    fn write(self, writer: &Writer) -> Result<(), DataFrameError>;
+}
+
+impl Evaluate for DataFrame {
+    fn evaluate(self, comp: &[Computation]) -> Self {
+        use Transformation::*;
+        let mut frame = self;
+        // get the input columns from the dataframe
+        for c in comp.iter().rev() {
+            for transform in &c.transformations {
+                frame = match transform {
+                    GroupAggregate(_, _) => panic!("aggregations not supported"),
+                    Calculate(operation) => frame.calculate(&operation),
+                    Join(a, b, criteria) => {
+                        let mut frame_a = DataFrame::empty();
+                        frame_a = frame_a.evaluate(a);
+                        let mut frame_b = DataFrame::empty();
+                        frame_b = frame_b.evaluate(b);
+                        // TODO: make sure that joined names follow same logic as LazyFrame
+                        frame_a
+                            .join(&frame_b, &criteria)
+                            .expect("Unable to join dataframes")
+                    }
+                    Select(cols) => frame.select(cols.iter().map(|s| s.as_str()).collect()),
+                    Drop(cols) => frame.drop(cols.iter().map(|s| s.as_str()).collect()),
+                    Read(reader) => Self::read(&reader),
+                    Filter(cond) => frame.filter(cond),
+                    Limit(size) => frame.limit(*size),
+                    Sort(criteria) => frame.sort(criteria).expect("Unable to sort dataframe"),
+                };
+            }
+        }
+
+        frame
+    }
+    fn calculate(self, calculation: &Calculation) -> Self {
+        let columns: Vec<&table::Column> = calculation
+            .inputs
+            .clone()
+            .into_iter()
+            .map(|col: Column| self.column_by_name(&col.name))
+            .collect();
+        match &calculation.function {
+            Function::Scalar(expr) => match expr {
+                // scalars that take 2 variables
+                ScalarFunction::Add
+                | ScalarFunction::Subtract
+                | ScalarFunction::Divide
+                | ScalarFunction::Multiply => {
+                    // we are adding 2 columns together to create a third
+                    let column: Vec<ArrayRef> = if let ColumnType::Scalar(dtype) =
+                        &calculation.output.column_type
+                    {
+                        match dtype {
+                            DataType::UInt16 => {
+                                // assign op to use
+                                let op = match expr {
+                                    ScalarFunction::Add => ScalarFn::add,
+                                    ScalarFunction::Subtract => ScalarFn::subtract,
+                                    ScalarFunction::Divide => ScalarFn::divide,
+                       
 }
 
 #[cfg(target_pointer_width = "32")]
